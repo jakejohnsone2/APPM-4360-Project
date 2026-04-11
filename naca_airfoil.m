@@ -27,7 +27,7 @@ function [x_upper, y_upper, x_lower, y_lower, x_camber, y_camber, poly_z, alphas
     P = str2double(naca_str(2)) / 10;     % camber position
     T = str2double(naca_str(3:4)) / 100;  % max thickness
 
-    if nargin < 2 || isempty(N_pts),    N_pts    = 100;  end
+    if nargin < 2 || isempty(N_pts),    N_pts    = 501;  end
     if nargin < 3 || isempty(close_te), close_te = true; end
 
     params.M        = M;
