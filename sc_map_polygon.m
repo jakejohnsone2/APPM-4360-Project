@@ -1,0 +1,160 @@
+%  APPM 4360 | Schwarz-Christoffel Mapping Project
+%  Function Name: sc_map_polygon.m
+%  Authors: Maxwell Meador
+%  Purpose: Applies the Schwarz-Christoffel (SC) map to a polygon.Uses
+%  newtons method (higher than 1d) to integrate. (Google it it uses the
+%  jacobian)
+%  Inputs:  vertices - complex vector of polygon corners (CCW order)
+%           phis     - EXTERIOR angle / pi at each corner (matches 'p' in notes)
+%  Outputs:
+%    z_of_t    - function: call z_of_t(t) to get z in polygon
+%    t_prevert - the pre-vertex locations on the real t-axis
+%    C_const   - the complex scaling constant C in the SC formula
+
+function [z_of_t, t_prevert, C_const] = sc_map_polygon(vertices, phis)
+    n = length(vertices); % Counts corners
+    side_lengths = abs(diff([vertices; vertices(1)])); % length of each side
+    n_free = n - 3; % How many do we gotta solve for (3 are fixed)
+    
+    if n_free == 0 
+        t_prevert = [-1; 0; 1];
+    else
+        t_free = linspace(0.1, 0.9, n_free)'; % Guess on real axis
+        residual_fn = @(x) sc_length_residual(x, vertices, phis, side_lengths); % error
+        [t_free, ~] = newton_solve(residual_fn, t_free); % Pass func to newton solver
+        t_all = zeros(n, 1);
+        t_all(1)     = -1;
+        t_all(2)     =  0;
+        t_all(n)     =  1;
+        t_all(3:n-1) = t_free;    % t_free is the solved output from Newton
+        t_prevert    = t_all;
+    end 
+    
+    I_first = sc_integrate(t_prevert(1), t_prevert(2), t_prevert, phis); % raw length of first polygon side
+    C_const = (vertices(2) - vertices(1)) / I_first; % Grabs C using raw length
+    
+    base_t = t_prevert(1); % Starting ref pt
+    base_z = vertices(1); % Starting ref pt (polygon)
+    z_of_t = @(t_in) sc_eval_map(t_in, base_t, base_z, C_const, t_prevert, phis);
+end
+
+function res = sc_length_residual(t_free, vertices, phis, side_lengths)
+    % How wrong is guess for preverticie
+    n = length(vertices); 
+    free_verts  = 3:n-1;       % these are the free vertex slots
+
+    % Build t_all respecting vertex ordering
+    t_all = zeros(n, 1);
+    t_all(1) = -1;             % prevertex for vertex 1
+    t_all(2) =  0;             % prevertex for vertex 2
+    t_all(n) =  1;             % prevertex for vertex n
+    t_all(free_verts) = t_free; % insert free values in correct slots
+
+    if any(diff(t_all) <= 0)
+        res = ones(n-3, 1) * 1e6;
+        return;
+    end
+
+    I1 = sc_integrate(t_all(1), t_all(2), t_all, phis);
+    
+    if abs(I1) < 1e-15 % Safety
+        res = ones(n-3, 1) * 1e6;
+        return;
+    end
+    
+    C = (vertices(2) - vertices(1)) / I1; % Temporary C
+    sc_lengths = zeros(n, 1);
+    
+    for k = 1:n % Loops through every side
+        k_next = mod(k, n) + 1; %mod() wraps around to 1 when n is k
+        Ik = sc_integrate(t_all(k), t_all(k_next), t_all, phis);
+        sc_lengths(k) = abs(C * Ik);
+    end 
+    
+    res = (sc_lengths(3:n-1) ./ side_lengths(3:n-1)) - 1; % Compares calculated and true length
+end
+
+function I = sc_integrate(t_a, t_b, t_prevert, phis)
+    % Does the actual SC integral stuff
+    integrand = @(t) sc_derivative(t, t_prevert, phis);
+    I = integral(integrand, t_a, t_b, ...
+        'AbsTol', 1e-10, 'RelTol', 1e-10, 'ArrayValued', true);
+end
+
+function val = sc_derivative(t_vec, t_prevert, phis)
+    % Makes the SC deriv
+    t_vec = t_vec(:); 
+    val = ones(length(t_vec), 1);
+    
+    for k = 1:length(t_prevert) % Loops through every pre-vertex
+        % Since phis are the exterior angles/pi (the 'p' from the formula),
+        % and the formula has them in the denominator, the numerator exponent is -phis.
+        exp_k = -phis(k); 
+        if abs(exp_k) >= 1e-14 % If exponent is zero skip
+            diff_k = complex(t_vec - t_prevert(k));
+            val = val .* (diff_k .^ exp_k); % Multiplies the running total by the SC factor for this specific corner.
+        end 
+    end 
+end
+
+function z = sc_eval_map(t_query, base_t, base_z, C_const, t_prevert, phis)
+    % Plots pts onto polygon
+    z = zeros(size(t_query));
+    for j = 1:length(t_query)
+        if abs(t_query(j) - base_t) < 1e-14 %check 4 start pt
+            z(j) = base_z;
+        else 
+            I = sc_integrate(base_t, t_query(j), t_prevert, phis); % Integrate from start to pt
+            z(j) = base_z + C_const * I; % Scale
+        end 
+    end
+end
+
+function [x, converged] = newton_solve(F, x0)
+    % Newton Method
+    x = x0(:); 
+    tol = 1e-6; % Accuracy
+    h_fd = 1e-5;  % Small step 4 jacobian
+    max_iter = 50;
+    n_vars = length(x);
+    
+    % Progress Bar 
+    wb = waitbar(0, 'Starting Newton Solver...', 'Name', 'SC Mapping Progress');
+    
+    for iter = 1:max_iter
+        % Update bar for the start of the new iteration
+        waitbar((iter-1)/max_iter, wb, sprintf('Iteration %d/%d: Calculating Error...', iter, max_iter));
+        
+        Fx = F(x);
+        if norm(Fx) < tol % Check total error vs target accuracy.
+            converged = true; 
+            close(wb);
+            return;
+        end
+        
+        J = zeros(length(Fx), n_vars); 
+        for k = 1:n_vars 
+            if mod(k, max(1, round(n_vars/20))) == 0 
+                current_progress = (iter-1)/max_iter + (k/n_vars)/max_iter;
+                waitbar(current_progress, wb, ...
+                    sprintf('Iteration %d/%d: Building Jacobian (%d/%d)...', iter, max_iter, k, n_vars));
+            end
+            
+            x_pert = x; 
+            x_pert(k) = x_pert(k) + h_fd; % Nudge
+            J(:, k) = (F(x_pert) - Fx) / h_fd;
+        end 
+        
+        step = J \ (-Fx);
+        
+        max_step = .2 * sqrt(n_vars);
+
+        if norm(real(step)) > max_step % Stop big jumps
+            step = step * (max_step / norm(real(step)));
+        end
+        x = x + real(step); % Jump
+    end 
+    converged = false;
+    close(wb); % Failed to converge in 50 steps, close the bar.
+    fprintf('\n[Newton] Reached max iterations without perfect convergence.\n');
+end
