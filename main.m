@@ -22,4 +22,6 @@ end
 
 airfoil_analysis(naca_str, aoa_deg);
 
+heatsink_analysis(); 
+
 fprintf('\nDone\n');
